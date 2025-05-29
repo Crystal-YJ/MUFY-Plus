@@ -1,5 +1,6 @@
 import streamlit as st
-import urllib.request
+import requests
+from bs4 import BeautifulSoup
 import re
 import random
 from PIL import Image, ImageDraw, ImageFont
@@ -8,24 +9,50 @@ from collections import Counter
 
 st.set_page_config(page_title="Structured Notes", layout="centered")
 
+# --- Theme Toggle ---
+theme_choice = st.radio("🎨 Theme", ["Light", "Dark"], horizontal=True)
+light_theme = {"bg_color": "#ffffff", "text_color": "#000000"}
+dark_theme = {"bg_color": "#1e1e1e", "text_color": "#f0f0f0"}
+theme = light_theme if theme_choice == "Light" else dark_theme
+
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background-color: {theme['bg_color']};
+        color: {theme['text_color']};
+    }}
+    div[data-testid="stMarkdownContainer"] > * {{
+        color: {theme['text_color']};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # --- Helper Functions ---
 def fetch_url_text(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-        paragraphs = re.findall(r'<p.*?>(.*?)</p>', html, re.DOTALL | re.IGNORECASE)
-        clean_paragraphs = [re.sub(r'<.*?>', '', p).strip() for p in paragraphs]
-        text = ' '.join(clean_paragraphs)
-        return text
-    except Exception:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        paragraphs = soup.find_all('p')
+        clean_paragraphs = [p.get_text().strip() for p in paragraphs]
+        return ' '.join(clean_paragraphs)
+    except Exception as e:
+        st.error(f"❌ Error fetching content: {e}")
         return None
 
 def clean_text(text):
-    text = re.sub(r'\[[^\]]*\]', '', text)  # Remove bracketed references
-    text = re.sub(r'http\S+\.(jpg|jpeg|png|gif|svg)', '', text, flags=re.IGNORECASE)  # Remove image URLs
-    text = re.sub(r'http\S+', '', text)  # Remove other URLs
+    text = re.sub(r'\[[^\]]*\]', '', text)
+    text = re.sub(r'http\S+\.(jpg|jpeg|png|gif|svg)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'http\S+', '', text)
     text = re.sub(r'www\S+', '', text)
-    text = re.sub(r'\b(image|photo|picture|fig|figure|chart|diagram)\b[^.]*\.', '', text, flags=re.IGNORECASE)  # Remove image sentences
+    text = re.sub(r'\b(image|photo|picture|fig|figure|chart|diagram)\b[^.]*\.', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\d+', '', text)
     text = re.sub(r'[^\w\s.,!?\'-]', '', text)
     text = re.sub(r'\s+', ' ', text)
@@ -33,8 +60,7 @@ def clean_text(text):
     return text.strip()
 
 def split_sentences(text):
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    return [s.strip() for s in sentences if len(s.strip().split()) > 5]
+    return [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.strip().split()) > 5]
 
 def get_top_keywords(sentences, num_keywords=10):
     all_words = ' '.join(sentences).lower().split()
@@ -73,9 +99,9 @@ def text_to_image(text, font_size=20, padding=20):
     return buffer.getvalue()
 
 # --- UI ---
-st.title("\U0001F9E0 Structured Note Extractor")
+st.title("🧠 Structured Note Extractor")
 
-tab1, tab2 = st.tabs(["\U0001F4C4 Paste Text", "\U0001F310 From Website"])
+tab1, tab2 = st.tabs(["📄 Paste Text", "🌐 From Website"])
 
 with tab1:
     text = st.text_area("Paste your text here:", height=300, value=st.session_state.get('text', ''))
@@ -90,19 +116,23 @@ with col2:
     clear_btn = st.button("🗑️ Clear")
 
 if clear_btn:
-    for k in ["text", "url", "quiz_items", "recall_sentences"]:
+    for k in ["text", "url", "quiz_items", "recall_sentences", "history"]:
         if k in st.session_state:
             del st.session_state[k]
     st.session_state.clear()
     st.experimental_set_query_params()
     st.stop()
 
+# --- Session History ---
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
 if summarize_btn:
     if url:
-        st.info("\U0001F50D Fetching webpage...")
+        st.info("🔍 Fetching webpage...")
         raw_text = fetch_url_text(url)
         if not raw_text:
-            st.error("❌ Failed to fetch or parse the URL.")
+            st.stop()
         else:
             raw_text = clean_text(raw_text)
             st.session_state.text = raw_text
@@ -114,6 +144,23 @@ if summarize_btn:
     else:
         st.warning("⚠️ Please enter some text or URL.")
 
+    if 'text' in st.session_state and st.session_state.text:
+        st.session_state.history.append({
+            "source": "URL" if url else "Pasted Text",
+            "text": st.session_state.text[:300] + "...",
+            "keywords": get_top_keywords(split_sentences(st.session_state.text), 8)
+        })
+
+with st.expander("🕘 Session History"):
+    if st.session_state.history:
+        for i, entry in enumerate(reversed(st.session_state.history), 1):
+            st.markdown(f"**{i}. Source:** {entry['source']}")
+            st.markdown(f"`Keywords:` {', '.join(entry['keywords'])}`")
+            st.markdown(f"Preview: {entry['text']}")
+            st.markdown("---")
+    else:
+        st.info("No history yet. Summarize something to see it here.")
+
 if 'text' in st.session_state:
     raw_text = st.session_state.text
     sentences = split_sentences(raw_text)
@@ -122,7 +169,7 @@ if 'text' in st.session_state:
     top_keywords = get_top_keywords(sentences, num_keywords=12)
     sections = [top_keywords[i:i + 3] for i in range(0, len(top_keywords), 3)]
 
-    st.subheader("\U0001F4DA Notes Overview")
+    st.subheader("📚 Notes Overview")
 
     col1, col2 = st.columns(2)
     for i, keywords in enumerate(sections):
@@ -134,10 +181,9 @@ if 'text' in st.session_state:
                 for item in items:
                     st.markdown(f"- {item}")
 
-    with st.expander("\U0001F9FE Full Cleaned Text"):
+    with st.expander("🧾 Full Cleaned Text"):
         st.write(raw_text)
 
-    # --- Typing Recall Test ---
     st.subheader("⌨️ Typing Recall Test")
 
     all_notes = list(used_sentences)
@@ -148,8 +194,6 @@ if 'text' in st.session_state:
 
     for idx, sentence in enumerate(st.session_state.recall_sentences):
         with st.expander(f"📝 Test {idx + 1}", expanded=False):
-            key_prefix = f"recall_{idx}"
-
             show_key = f"show_image_{idx}"
             allow_key = f"allow_typing_{idx}"
 
@@ -177,7 +221,7 @@ if 'text' in st.session_state:
                 allow_typing = True
 
             if show:
-                image_bytes = text_to_image(sentence, font_size=24)
+                image_bytes = text_to_image(sentence, font_size=36)
                 st.image(image_bytes, use_container_width=False, caption="Memorize and click Hide to proceed.")
 
             if allow_typing:
